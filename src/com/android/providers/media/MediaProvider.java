@@ -1858,6 +1858,17 @@ public class MediaProvider extends ContentProvider {
                     + " AND datetaken<date_modified*5;");
         }
 
+        if (fromVersion < 701) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS bookmarks (" +
+                " _id INTEGER PRIMARY KEY," +
+                " _data TEXT," +
+                " _display_name TEXT," +
+                " position INTEGER," +
+                " date_added INTEGER," +
+                " mime_type TEXT," +
+                " media_type TEXT" +
+                ");");
+        }
 
         sanityCheck(db, fromVersion);
         long elapsedSeconds = (SystemClock.currentTimeMicro() - startTime) / 1000000;
@@ -2611,6 +2622,21 @@ public class MediaProvider extends ContentProvider {
                 prependArgs.add(uri.getPathSegments().get(3));
                 break;
 
+            case AUDIO_FOLDER:
+                qb.setTables("files");
+                qb.appendWhere("is_music=1");
+                projectionIn[0] = "count(*),_id,_data,parent";
+                groupBy = "parent";
+                break;
+
+            case AUDIO_FOLDER_ID:
+                qb.setTables("files,artists");
+                qb.appendWhere("is_music=1");
+                qb.appendWhere("parent=?");
+                prependArgs.add(uri.getPathSegments().get(3));
+                qb.appendWhere("files.artist_id = artists.artist_id");
+                break;
+
             case AUDIO_SEARCH_LEGACY:
                 Log.w(TAG, "Legacy media search Uri used. Please update your code.");
                 // fall through
@@ -2632,6 +2658,13 @@ public class MediaProvider extends ContentProvider {
             case MTP_OBJECT_REFERENCES:
                 int handle = Integer.parseInt(uri.getPathSegments().get(2));
                 return getObjectReferences(helper, db, handle);
+            case MEDIA_BOOKMARK:
+                qb.setTables("bookmarks");
+                break;
+            case MEDIA_BOOKMARK_ID:
+                qb.setTables("bookmarks");
+                qb.appendWhere("_id = " + uri.getPathSegments().get(2));
+                break;
 
             default:
                 throw new IllegalStateException("Unknown URL: " + uri.toString());
@@ -3608,6 +3641,13 @@ public class MediaProvider extends ContentProvider {
                 }
                 break;
 
+            case MEDIA_BOOKMARK:
+                rowId = db.insert("bookmarks", "mime_type", initialValues);
+                if (rowId > 0) {
+                    newUri = ContentUris.withAppendedId(uri, rowId);
+                }
+                break;
+
             default:
                 throw new UnsupportedOperationException("Invalid URI " + uri);
         }
@@ -3926,6 +3966,12 @@ public class MediaProvider extends ContentProvider {
             case FILES:
             case MTP_OBJECTS:
                 out.table = "files";
+                break;
+            case MEDIA_BOOKMARK_ID:
+                where = "_id=" + uri.getPathSegments().get(2);
+                // fall through
+            case MEDIA_BOOKMARK:
+                out.table = "bookmarks";
                 break;
 
             default:
@@ -5492,6 +5538,8 @@ public class MediaProvider extends ContentProvider {
     private static final int AUDIO_ALBUMART = 119;
     private static final int AUDIO_ALBUMART_ID = 120;
     private static final int AUDIO_ALBUMART_FILE_ID = 121;
+    private static final int AUDIO_FOLDER = 122;
+    private static final int AUDIO_FOLDER_ID = 123;
 
     private static final int VIDEO_MEDIA = 200;
     private static final int VIDEO_MEDIA_ID = 201;
@@ -5520,6 +5568,9 @@ public class MediaProvider extends ContentProvider {
     // UsbReceiver calls insert() and delete() with this URI to tell us
     // when MTP is connected and disconnected
     private static final int MTP_CONNECTED = 705;
+
+    private static final int MEDIA_BOOKMARK = 1101;
+    private static final int MEDIA_BOOKMARK_ID = 1102;
 
     private static final UriMatcher URI_MATCHER =
             new UriMatcher(UriMatcher.NO_MATCH);
@@ -5578,6 +5629,8 @@ public class MediaProvider extends ContentProvider {
         URI_MATCHER.addURI("media", "*/audio/albumart", AUDIO_ALBUMART);
         URI_MATCHER.addURI("media", "*/audio/albumart/#", AUDIO_ALBUMART_ID);
         URI_MATCHER.addURI("media", "*/audio/media/#/albumart", AUDIO_ALBUMART_FILE_ID);
+        URI_MATCHER.addURI("media", "*/audio/folder", AUDIO_FOLDER);
+        URI_MATCHER.addURI("media", "*/audio/folder/#", AUDIO_FOLDER_ID);
 
         URI_MATCHER.addURI("media", "*/video/media", VIDEO_MEDIA);
         URI_MATCHER.addURI("media", "*/video/media/#", VIDEO_MEDIA_ID);
@@ -5618,6 +5671,8 @@ public class MediaProvider extends ContentProvider {
         // used by the music app's search activity
         URI_MATCHER.addURI("media", "*/audio/search/fancy", AUDIO_SEARCH_FANCY);
         URI_MATCHER.addURI("media", "*/audio/search/fancy/*", AUDIO_SEARCH_FANCY);
+        URI_MATCHER.addURI("media", "*/bookmark", MEDIA_BOOKMARK);
+        URI_MATCHER.addURI("media", "*/bookmark/#", MEDIA_BOOKMARK_ID);
     }
 
     private static String getVolumeName(Uri uri) {
