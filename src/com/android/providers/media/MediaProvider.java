@@ -4844,6 +4844,9 @@ public class MediaProvider extends ContentProvider {
     // Extract compressed image data from the audio file itself or, if that fails,
     // look for a file "AlbumArt.jpg" in the containing directory.
     private static byte[] getCompressedAlbumArt(Context context, String path) {
+        if (path == null)
+            return null;
+
         byte[] compressed = null;
 
         try {
