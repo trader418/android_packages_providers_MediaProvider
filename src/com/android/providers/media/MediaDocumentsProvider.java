@@ -12,6 +12,20 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * Per article 5 of the Apache 2.0 License, some modifications to this code
+ * were made by the Oneplus Project.
+ *
+ * Modifications Copyright (C) 2015 The Oneplus Project
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 3
+ * of the License, or (at your option) any later version.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
 package com.android.providers.media;
@@ -25,6 +39,7 @@ import android.database.MatrixCursor;
 import android.database.MatrixCursor.RowBuilder;
 import android.graphics.BitmapFactory;
 import android.graphics.Point;
+import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
@@ -54,6 +69,7 @@ import libcore.io.IoUtils;
 
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.util.ArrayList;
 
 /**
  * Presents a {@link DocumentsContract} view of {@link MediaProvider} external
@@ -421,13 +437,18 @@ public class MediaDocumentsProvider extends DocumentsProvider {
         }
 
         final Uri target;
-        if (TYPE_IMAGE.equals(ident.type) && ident.id != -1) {
+        if ((TYPE_IMAGE.equals(ident.type) || TYPE_IMAGES_BUCKET.equals(ident.type)) &&
+                ident.id != -1) {
             target = ContentUris.withAppendedId(
                     Images.Media.EXTERNAL_CONTENT_URI, ident.id);
         } else if (TYPE_VIDEO.equals(ident.type) && ident.id != -1) {
             target = ContentUris.withAppendedId(
                     Video.Media.EXTERNAL_CONTENT_URI, ident.id);
-        } else if (TYPE_AUDIO.equals(ident.type) && ident.id != -1) {
+        } else if (TYPE_VIDEOS_BUCKET.equals(ident.type) && ident.id != -1) {
+            // TODO where can we get the uri for this from?
+            throw new FileNotFoundException("Unsupported document " + docId);
+        } else if ((TYPE_AUDIO.equals(ident.type) || TYPE_ARTIST.equals(ident.type) ||
+                TYPE_ALBUM.equals(ident.type)) && ident.id != -1) {
             target = ContentUris.withAppendedId(
                     Audio.Media.EXTERNAL_CONTENT_URI, ident.id);
         } else {
@@ -467,6 +488,100 @@ public class MediaDocumentsProvider extends DocumentsProvider {
         } finally {
             Binder.restoreCallingIdentity(token);
         }
+    }
+
+    @Override
+    public String renameDocument(String docId, String displayName) throws FileNotFoundException {
+        File before = getFileForDocId(docId);
+
+        if (before != null) {
+            ArrayList<String> toRescan = getFilesPathRecursively(before);
+            final File after = new File(before.getParentFile(), displayName);
+            if (after.exists()) {
+                throw new IllegalStateException("Already exists " + after);
+            }
+            if (!before.renameTo(after)) {
+                throw new IllegalStateException("Failed to rename to " + after);
+            }
+            toRescan.addAll(getFilesPathRecursively(after));
+            MediaScannerConnection.scanFile(getContext(), toRescan.toArray(
+                    new String[toRescan.size()]), null, null);
+        }
+        return null;
+    }
+
+    @Override
+    public void deleteDocument(String docId) throws FileNotFoundException {
+        File file = getFileForDocId(docId);
+        if (!file.delete()) {
+            throw new IllegalStateException("Failed to delete " + file);
+        }
+        MediaScannerConnection.scanFile(getContext(), new String[]{file.getAbsolutePath()},
+                null, null);
+    }
+
+    private File getFileForDocId(String docId) {
+        final ContentResolver resolver = getContext().getContentResolver();
+        final Ident ident = getIdentForDocId(docId);
+
+        final long token = Binder.clearCallingIdentity();
+        Cursor cursor = null;
+        File file = null;
+        try {
+            if (TYPE_IMAGES_BUCKET.equals(ident.type)) {
+                // single bucket
+                cursor = resolver.query(Images.Media.EXTERNAL_CONTENT_URI,
+                        ImagesBucketQuery.PROJECTION, ImageColumns.BUCKET_ID + "=" + ident.id,
+                        null, ImagesBucketQuery.SORT_ORDER);
+                if (cursor.moveToFirst()) {
+                    // DATA contains a file name, not a folder
+                    String path = cursor.getString(ImagesBucketQuery.DATA);
+                    path = path.substring(0, path.lastIndexOf("/"));
+                    file = new File(path);
+                }
+            } else if (TYPE_IMAGE.equals(ident.type)) {
+                // single image
+                cursor = resolver.query(Images.Media.EXTERNAL_CONTENT_URI,
+                        ImageQuery.PROJECTION, BaseColumns._ID + "=" + ident.id, null,
+                        null);
+                if (cursor.moveToFirst()) {
+                    file = new File(cursor.getString(ImageQuery.DATA));
+                }
+            } else if (TYPE_VIDEOS_BUCKET.equals(ident.type)) {
+                // single bucket
+                cursor = resolver.query(Video.Media.EXTERNAL_CONTENT_URI,
+                        VideosBucketQuery.PROJECTION, VideoColumns.BUCKET_ID + "=" + ident.id,
+                        null, VideosBucketQuery.SORT_ORDER);
+                if (cursor.moveToFirst()) {
+                    // DATA contains a file name, not a folder
+                    String path = cursor.getString(VideosBucketQuery.DATA);
+                    path = path.substring(0, path.lastIndexOf("/"));
+                    file = new File(path);
+                }
+            } else if (TYPE_VIDEO.equals(ident.type)) {
+                // single video
+                cursor = resolver.query(Video.Media.EXTERNAL_CONTENT_URI,
+                        VideoQuery.PROJECTION, BaseColumns._ID + "=" + ident.id, null,
+                        null);
+                if (cursor.moveToFirst()) {
+                    file = new File(cursor.getString(VideoQuery.DATA));
+                }
+            } else if (TYPE_AUDIO.equals(ident.type)) {
+                // single song
+                cursor = resolver.query(Audio.Media.EXTERNAL_CONTENT_URI,
+                        SongQuery.PROJECTION, BaseColumns._ID + "=" + ident.id, null,
+                        null);
+                if (cursor.moveToFirst()) {
+                    file = new File(cursor.getString(SongQuery.DATA));
+                }
+            } else {
+                throw new UnsupportedOperationException("Unsupported document " + docId);
+            }
+        } finally {
+            IoUtils.closeQuietly(cursor);
+            Binder.restoreCallingIdentity(token);
+        }
+        return file;
     }
 
     private boolean isEmpty(Uri uri) {
@@ -557,13 +672,15 @@ public class MediaDocumentsProvider extends DocumentsProvider {
         final String[] PROJECTION = new String[] {
                 ImageColumns.BUCKET_ID,
                 ImageColumns.BUCKET_DISPLAY_NAME,
-                ImageColumns.DATE_MODIFIED };
+                ImageColumns.DATE_MODIFIED,
+                ImageColumns.DATA };
         final String SORT_ORDER = ImageColumns.BUCKET_ID + ", " + ImageColumns.DATE_MODIFIED
                 + " DESC";
 
         final int BUCKET_ID = 0;
         final int BUCKET_DISPLAY_NAME = 1;
         final int DATE_MODIFIED = 2;
+        final int DATA = 3;
     }
 
     private void includeImagesBucket(MatrixCursor result, Cursor cursor) {
@@ -579,7 +696,7 @@ public class MediaDocumentsProvider extends DocumentsProvider {
                 cursor.getLong(ImagesBucketQuery.DATE_MODIFIED) * DateUtils.SECOND_IN_MILLIS);
         row.add(Document.COLUMN_FLAGS, Document.FLAG_DIR_PREFERS_GRID
                 | Document.FLAG_SUPPORTS_THUMBNAIL | Document.FLAG_DIR_PREFERS_LAST_MODIFIED
-                | Document.FLAG_DIR_HIDE_GRID_TITLES);
+                | Document.FLAG_DIR_HIDE_GRID_TITLES | Document.FLAG_SUPPORTS_COPY);
     }
 
     private interface ImageQuery {
@@ -588,13 +705,15 @@ public class MediaDocumentsProvider extends DocumentsProvider {
                 ImageColumns.DISPLAY_NAME,
                 ImageColumns.MIME_TYPE,
                 ImageColumns.SIZE,
-                ImageColumns.DATE_MODIFIED };
+                ImageColumns.DATE_MODIFIED,
+                ImageColumns.DATA };
 
         final int _ID = 0;
         final int DISPLAY_NAME = 1;
         final int MIME_TYPE = 2;
         final int SIZE = 3;
         final int DATE_MODIFIED = 4;
+        final int DATA = 5;
     }
 
     private void includeImage(MatrixCursor result, Cursor cursor) {
@@ -608,20 +727,24 @@ public class MediaDocumentsProvider extends DocumentsProvider {
         row.add(Document.COLUMN_MIME_TYPE, cursor.getString(ImageQuery.MIME_TYPE));
         row.add(Document.COLUMN_LAST_MODIFIED,
                 cursor.getLong(ImageQuery.DATE_MODIFIED) * DateUtils.SECOND_IN_MILLIS);
-        row.add(Document.COLUMN_FLAGS, Document.FLAG_SUPPORTS_THUMBNAIL);
+        row.add(Document.COLUMN_FLAGS, Document.FLAG_SUPPORTS_THUMBNAIL
+                | Document.FLAG_SUPPORTS_COPY | Document.FLAG_SUPPORTS_RENAME
+                | Document.FLAG_SUPPORTS_DELETE);
     }
 
     private interface VideosBucketQuery {
         final String[] PROJECTION = new String[] {
                 VideoColumns.BUCKET_ID,
                 VideoColumns.BUCKET_DISPLAY_NAME,
-                VideoColumns.DATE_MODIFIED };
+                VideoColumns.DATE_MODIFIED,
+                VideoColumns.DATA };
         final String SORT_ORDER = VideoColumns.BUCKET_ID + ", " + VideoColumns.DATE_MODIFIED
                 + " DESC";
 
         final int BUCKET_ID = 0;
         final int BUCKET_DISPLAY_NAME = 1;
         final int DATE_MODIFIED = 2;
+        final int DATA = 3;
     }
 
     private void includeVideosBucket(MatrixCursor result, Cursor cursor) {
@@ -637,7 +760,7 @@ public class MediaDocumentsProvider extends DocumentsProvider {
                 cursor.getLong(VideosBucketQuery.DATE_MODIFIED) * DateUtils.SECOND_IN_MILLIS);
         row.add(Document.COLUMN_FLAGS, Document.FLAG_DIR_PREFERS_GRID
                 | Document.FLAG_SUPPORTS_THUMBNAIL | Document.FLAG_DIR_PREFERS_LAST_MODIFIED
-                | Document.FLAG_DIR_HIDE_GRID_TITLES);
+                | Document.FLAG_DIR_HIDE_GRID_TITLES | Document.FLAG_SUPPORTS_COPY);
     }
 
     private interface VideoQuery {
@@ -646,13 +769,15 @@ public class MediaDocumentsProvider extends DocumentsProvider {
                 VideoColumns.DISPLAY_NAME,
                 VideoColumns.MIME_TYPE,
                 VideoColumns.SIZE,
-                VideoColumns.DATE_MODIFIED };
+                VideoColumns.DATE_MODIFIED,
+                VideoColumns.DATA };
 
         final int _ID = 0;
         final int DISPLAY_NAME = 1;
         final int MIME_TYPE = 2;
         final int SIZE = 3;
         final int DATE_MODIFIED = 4;
+        final int DATA = 5;
     }
 
     private void includeVideo(MatrixCursor result, Cursor cursor) {
@@ -666,7 +791,9 @@ public class MediaDocumentsProvider extends DocumentsProvider {
         row.add(Document.COLUMN_MIME_TYPE, cursor.getString(VideoQuery.MIME_TYPE));
         row.add(Document.COLUMN_LAST_MODIFIED,
                 cursor.getLong(VideoQuery.DATE_MODIFIED) * DateUtils.SECOND_IN_MILLIS);
-        row.add(Document.COLUMN_FLAGS, Document.FLAG_SUPPORTS_THUMBNAIL);
+        row.add(Document.COLUMN_FLAGS, Document.FLAG_SUPPORTS_THUMBNAIL
+                | Document.FLAG_SUPPORTS_COPY | Document.FLAG_SUPPORTS_RENAME
+                | Document.FLAG_SUPPORTS_DELETE);
     }
 
     private interface ArtistQuery {
@@ -713,13 +840,17 @@ public class MediaDocumentsProvider extends DocumentsProvider {
                 AudioColumns.TITLE,
                 AudioColumns.MIME_TYPE,
                 AudioColumns.SIZE,
-                AudioColumns.DATE_MODIFIED };
+                AudioColumns.DATE_MODIFIED,
+                AudioColumns.DISPLAY_NAME,
+                AudioColumns.DATA };
 
         final int _ID = 0;
         final int TITLE = 1;
         final int MIME_TYPE = 2;
         final int SIZE = 3;
         final int DATE_MODIFIED = 4;
+        final int DISPLAY_NAME = 5;
+        final int DATA = 6;
     }
 
     private void includeAudio(MatrixCursor result, Cursor cursor) {
@@ -728,7 +859,9 @@ public class MediaDocumentsProvider extends DocumentsProvider {
 
         final RowBuilder row = result.newRow();
         row.add(Document.COLUMN_DOCUMENT_ID, docId);
-        row.add(Document.COLUMN_DISPLAY_NAME, cursor.getString(SongQuery.TITLE));
+        row.add(Document.COLUMN_FLAGS, Document.FLAG_SUPPORTS_COPY | Document.FLAG_SUPPORTS_RENAME
+                | Document.FLAG_SUPPORTS_DELETE);
+        row.add(Document.COLUMN_DISPLAY_NAME, cursor.getString(SongQuery.DISPLAY_NAME));
         row.add(Document.COLUMN_SIZE, cursor.getLong(SongQuery.SIZE));
         row.add(Document.COLUMN_MIME_TYPE, cursor.getString(SongQuery.MIME_TYPE));
         row.add(Document.COLUMN_LAST_MODIFIED,
