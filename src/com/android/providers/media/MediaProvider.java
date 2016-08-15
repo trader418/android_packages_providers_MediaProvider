@@ -2326,7 +2326,13 @@ public class MediaProvider extends ContentProvider {
             return null;
         }
         helper.mNumQueries++;
-        SQLiteDatabase db = helper.getReadableDatabase();
+        SQLiteDatabase db = null;
+        try {
+            db = helper.getReadableDatabase();
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
         if (db == null) return null;
         SQLiteQueryBuilder qb = new SQLiteQueryBuilder();
         String limit = uri.getQueryParameter("limit");
@@ -4905,6 +4911,10 @@ public class MediaProvider extends ContentProvider {
 
         byte[] compressed = null;
 
+        //When playing Music,plug out the SD card to cause this case.
+        if (path == null) {
+            return null;
+        }
         try {
             File f = new File(path);
             ParcelFileDescriptor pfd = ParcelFileDescriptor.open(f,
